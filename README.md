@@ -1,30 +1,63 @@
-# LangGraph Email Agent · DeepSeek 学习复现
+# MailFlow Agent｜邮件智能体学习项目
 
-基于 [LangChain agents-from-scratch](https://github.com/langchain-ai/agents-from-scratch) 的学习复现。此仓库仅整理已学习的基础 Agent、评测和人工介入（HITL）三个章节，以及它们运行需要的公共模块与测试。保留上游 MIT 版权声明。
+我用这个项目学习如何把大模型接入实际工作流：让助手判断邮件是否需要回复、选择工具完成任务，并在重要操作前暂停，交给我审核。
 
-## 本次公开范围
+项目使用 LangGraph 编排流程，DeepSeek 负责分类和生成，LangSmith 用于追踪与评估。目前完成了基础邮件助手、评估实验和人工审核流程，最新进展是跑通 Studio 中的问答、邮件草稿审核，并修复错误恢复输入导致流程反复失败的问题。
 
-- `notebooks/agent.ipynb`：邮件分类、工具调用与回复子图。
-- `notebooks/evaluation.ipynb`：工具检查、分类评测、LLM-as-Judge。
-- `notebooks/hitl.ipynb`：人工介入章节文件；当前学习到批准工具调用，并开始学习编辑参数。
-- `src/email_assistant/email_assistant.py` 与 `email_assistant_hitl.py`：上述助手的 Python 实现。
-- 运行必需的模型适配、提示词、状态结构、工具、格式化函数、示例数据和测试。
-- 三个 Notebook 引用的上游课程插图。
+邮件和日历工具目前都是模拟实现，适合学习与调试；真正接入邮箱服务是后续计划。
 
-记忆章节、Gmail 集成、定时任务、独立 LangGraph 101 教程、上游自动化工作流和无关测试未纳入此次发布。公共模块中可能保留未使用的上游辅助定义；它们不代表本学习版已实现或验证对应扩展功能。HITL 中的检查点用于保存执行状态，属于本次学习范围。
+## 我完成的内容
 
-## 本学习版改动
+- 邮件分类：区分 `respond`、`notify`、`ignore`，为不同结果安排后续节点。
+- 工具调用：查询模拟日历、安排模拟会议、起草和模拟发送邮件。
+- 人工审核：支持批准、修改参数、提出意见和忽略操作。
+- 主动问答：助手通过 `Question` 获取缺失信息，再继续生成回复。
+- DeepSeek 接入：集中管理模型配置，适配结构化输出、工具调用和非 thinking 模式。
+- 评估实验：检查工具调用、分类结果，并使用模型裁判检查回复是否满足要求。
+- Studio 调试：查看中断请求、提交 JSON 反馈、批准邮件、检查消息历史。
+- 错误恢复：对人工审核输入做校验，格式错误时重新暂停，避免旧错误值让流程一直失败。
 
-- `models.py` 集中加载项目根目录 `.env`，使用 DeepSeek 的 OpenAI 兼容接口。
-- 适配结构化输出和工具调用；当前模型配置关闭 thinking。
-- 提供 `run_demo.py` 普通脚本入口。
-- 使用 DeepSeek 作为回复质量评测的裁判。
-- 配置仅包含基础版和 HITL 版的 Studio 图。
-- Notebook 清除运行输出，环境变量加载不依赖本机绝对路径。
+## 工作流程
 
-## 安装与 PyCharm
+```mermaid
+flowchart TD
+    A[输入邮件] --> B[邮件分类]
+    B -->|ignore| Z[结束]
+    B -->|notify| C[人工决定是否回复]
+    C -->|忽略| Z
+    C -->|回复| D[模型生成方案]
+    B -->|respond| D
+    D --> E[工具请求与参数]
+    E -->|查日历| F[执行模拟查询]
+    F --> D
+    E -->|写邮件、安排会议、提问| G[暂停审核]
+    G -->|反馈或回答| D
+    G -->|批准或修改| H[执行当前模拟工具]
+    H --> D
+    G -->|忽略| Z
+    D -->|Done| Z
+```
 
-需要 Python `>=3.11,<3.14`，建议使用 Python 3.11。克隆仓库后，在项目根目录的 PowerShell 终端执行：
+模型先生成工具调用参数，包括邮件正文，程序再暂停供人工审核。`Question` 的回答由审核处理函数作为工具消息交回模型。
+
+## 目录
+
+- `notebooks/agent.ipynb`：基础 Agent 的学习与实验。
+- `notebooks/evaluation.ipynb`：工具检查、分类评估和回复质量评估。
+- `notebooks/hitl.ipynb`：人工审核、工具编辑、反馈和问答练习，以及实践记录。
+- `src/email_assistant/email_assistant.py`：基础邮件助手。
+- `src/email_assistant/email_assistant_hitl.py`：带人工审核的邮件助手。
+- `src/email_assistant/human_review.py`：审核输入校验和恢复处理。
+- `src/email_assistant/models.py`：DeepSeek 模型配置和环境变量加载。
+- `tests/test_human_review.py`：无需模型 API 的审核恢复测试。
+- `tests/test_response.py`：工具调用与回复质量测试。
+- `run_demo.py`：普通 Python 脚本入口。
+
+仓库按当前学习进度维护。记忆模块、Gmail 集成、定时任务和独立 LangGraph 101 教程暂未纳入。
+
+## 本地运行
+
+推荐 Python 3.11，项目支持 `>=3.11,<3.14`。克隆后在项目根目录的 PowerShell 中执行：
 
 ```powershell
 py -m pip install uv
@@ -32,83 +65,120 @@ py -m uv python install 3.11
 py -m uv sync --python 3.11 --extra dev --locked
 ```
 
-在 PyCharm 中打开项目，选择已有解释器 `.venv\Scripts\python.exe`；Notebook 内核也选择此环境。锁文件沿用已安装验证的课程依赖集合，其中可能包含未使用的扩展依赖。
+在 PyCharm 中选择 `.venv\Scripts\python.exe` 作为解释器，Notebook 也使用同一个环境。
 
-## 配置与演示
-
-首次使用时复制空模板，已有 `.env` 时不要覆盖：
+首次配置时复制模板；已有 `.env` 时不要覆盖：
 
 ```powershell
 Copy-Item .env.deepseek.example .env
 ```
 
-在本地填写：
+在自己的 `.env` 中填写配置：
 
 ```dotenv
 DEEPSEEK_API_KEY=your_private_deepseek_key
 DEEPSEEK_MODEL=deepseek-flash
 LANGSMITH_TRACING=false
-LANGSMITH_PROJECT=agents-from-scratch-learning
+LANGSMITH_PROJECT=mailflow-agent
 LANGSMITH_API_KEY=
 ```
 
-进行 LangSmith 追踪、数据集和评测时，需要独立的 LangSmith 密钥；填写后启用 `LANGSMITH_TRACING=true`。如账户使用其他区域，配置相应 `LANGSMITH_ENDPOINT`，必要时设置 `LANGSMITH_WORKSPACE_ID`。
-
-`DEEPSEEK_MODEL` 可按账户支持的模型配置，但所选模型必须兼容本项目的工具调用和模型参数。
+模型名称可按账户支持情况调整，所选模型需要兼容工具调用和项目使用的参数。追踪与评估需要单独配置 LangSmith 密钥；使用其他服务区域时设置相应 `LANGSMITH_ENDPOINT`，必要时配置 `LANGSMITH_WORKSPACE_ID`。
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 run_demo.py
 ```
 
-基础邮件与日历工具为模拟实现，运行不会真实发送邮件或创建会议。
+## 人工审核与 Studio
 
-## 学习与评测
-
-按 `agent.ipynb` → `evaluation.ipynb` → `hitl.ipynb` 顺序逐格运行。HITL 使用 `InMemorySaver` 保存执行状态；恢复时使用同一图实例及 `thread_id`。重启内核会丢失内存状态。
-
-先检查测试能否加载：
-
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m pytest notebooks/test_tools.py tests/test_response.py --agent-module email_assistant --collect-only -q
-```
-
-基础工具检查共 2 项：
-
-```powershell
-$env:LANGSMITH_TEST_SUITE = "Email assistant: Test Tools"
-.\.venv\Scripts\python.exe -X utf8 -m pytest notebooks/test_tools.py -v
-```
-
-完整回复测试选取 8 封需要回复的邮件，分别检查工具调用和回复质量，共 16 项：
-
-```powershell
-$env:LANGSMITH_TEST_SUITE = "Email assistant: Full Response"
-.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_response.py --agent-module email_assistant -v
-```
-
-实际评测会调用模型，并将测试记录上传到你的 LangSmith 账户。自动化回复测试支持基础版 `email_assistant`；HITL 通过 Notebook 中的暂停与恢复流程学习验证。
-
-历史学习运行观察到：分类评测 13/16 正确，完整回复测试 14/16 通过。这是特定运行结果，两个指标含义不同，也不能保证后续运行一致。工具检查尚未完整覆盖参数、调用顺序和次数；模型裁判结果需要结合样例人工核查。
-
-## Studio
-
-在项目根目录执行并保持终端开启：
+在项目根目录启动本地服务，并保持终端开启：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m langgraph_cli dev --no-browser
 ```
 
-打开命令输出的 Studio 链接，选择 `email_assistant` 或 `email_assistant_hitl`。`langgraph.local.json` 另保留仅加载基础版的配置。
+打开启动信息中的 Studio 链接，选择 `email_assistant_hitl`。在 `email_input` 字段提交邮件对象，运行到中断后，在 Resume 的原始输入框提交 JSON。
 
-## 发布说明
+回答问题或提出修改意见：
 
-- 本仓库是按学习范围导出的独立快照，未复制上游 Git 历史。
-- 未包含真实密钥、个人实验结果、Notebook 输出、本地路径、IDE 配置、虚拟环境、运行缓存和本地备份。
-- 样例数据与课程插图来自上游。使用模拟日历，会议日期与参数仍需核查。
-- 多工具并发、恢复时的副作用幂等性、持久化和生产部署仍需后续完善。
+```json
+[{"type": "response", "args": "Please make the email shorter and less formal."}]
+```
+
+批准当前方案：
+
+```json
+[{"type": "accept"}]
+```
+
+直接编辑邮件参数：
+
+```json
+[{
+  "type": "edit",
+  "args": {
+    "args": {
+      "to": "partner@example.com",
+      "subject": "Re: Dinner?",
+      "content": "Let's do Indian tonight!"
+    }
+  }
+}]
+```
+
+每次先核对当前 `action`。会议参数不能提交给邮件工具，修改邮件正文也不会自动更改已经执行的会议安排。工具是否允许某种操作由中断请求中的 `config` 决定。
+
+我排查过 `string indices must be integers, not 'str'`：处理函数原先直接按字典读取人工回复，错误字符串被检查点保存后，重试仍会拿到旧值。现在统一校验输入，并在错误格式下重新暂停；有效反馈能够从后续中断继续处理。
+
+Notebook 使用 `InMemorySaver`，恢复时需要同一个图实例和线程编号；重启内核会丢失内存状态。本地开发服务把线程数据保存在 `.langgraph_api`，该目录不提交。查看消息历史时先重新获取状态：
+
+```python
+state = graph.get_state(thread_config)
+for message in state.values["messages"]:
+    message.pretty_print()
+```
+
+Agent Inbox 提供待办式审核界面，连接信息为图 `email_assistant_hitl` 和服务地址 `http://127.0.0.1:2024`。接口沿用其 `action_request`、`config`、`description` 协议。本阶段已学习连接方式，实际网页连接尚未作为验证结果。
+
+## 测试与实验记录
+
+无需外部模型的恢复测试：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_human_review.py -q
+```
+
+覆盖结构化回复、JSON 文本、非法输入再次中断、操作权限检查，以及原处理函数已经保存错误值之后的恢复。当前版本 10 项通过。
+
+检查在线评估用例能否加载：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m pytest notebooks/test_tools.py tests/test_response.py --agent-module email_assistant --collect-only -q
+```
+
+基础工具检查为 2 项，完整回复测试使用 8 封邮件，分别检查工具调用和回复质量，共 16 项：
+
+```powershell
+$env:LANGSMITH_TEST_SUITE = "MailFlow Agent: Tool Checks"
+.\.venv\Scripts\python.exe -X utf8 -m pytest notebooks/test_tools.py -v
+
+$env:LANGSMITH_TEST_SUITE = "MailFlow Agent: Response Evaluation"
+.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_response.py --agent-module email_assistant -v
+```
+
+这些评估会调用模型，并记录到配置的 LangSmith 账户。此前单次学习运行中，分类评估为 13/16 正确，完整回复测试为 14/16 通过；两个指标测量的内容不同，不能视为稳定性能保证。本次发布未重新运行整套在线评估。
+
+人工审核练习中已跑通会议与邮件参数编辑、晚餐偏好问答，以及 Studio 中对 API 文档邮件的反馈和批准流程。模型是否严格满足时间、语气等要求，仍需要结合具体输出检查。
+
+## 后续计划
+
+- 接入真实邮箱与日历，补充参数校验。
+- 处理多工具请求及恢复重放中的副作用问题。
+- 学习持久化存储、偏好记忆和更完整的评估。
+- 完善 Agent Inbox 连接与端到端测试。
 
 ## 来源与许可
 
-原项目：[langchain-ai/agents-from-scratch](https://github.com/langchain-ai/agents-from-scratch)。配套课程：[Ambient Agents with LangGraph](https://academy.langchain.com/courses/ambient-agents)。
+项目起步参考了 [LangChain agents-from-scratch](https://github.com/langchain-ai/agents-from-scratch) 和 [Ambient Agents with LangGraph](https://academy.langchain.com/courses/ambient-agents) 课程代码。我在此基础上进行 DeepSeek 适配、运行调试、审核恢复改进和学习记录整理。课程示例、公共辅助代码及插图保留其原始来源。
 
-遵循 [MIT License](LICENSE)，保留上游 `Copyright (c) 2026 LangChain, Inc.` 声明。
+采用 [MIT License](LICENSE)，保留上游 `Copyright (c) 2026 LangChain, Inc.` 声明。

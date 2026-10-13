@@ -1,7 +1,7 @@
 [project]
-name = "agents_from_scratch"
-version = "0.1.0"
-description = "Build an e-mail assistant from scratch"
+name = "mailflow-agent"
+version = "0.2.0"
+description = "A LangGraph email agent with DeepSeek, human review, and evaluation"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "langchain>=1.0.0",

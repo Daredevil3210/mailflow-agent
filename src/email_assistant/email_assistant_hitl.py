@@ -1,9 +1,10 @@
 from typing import Literal
 
 from email_assistant.models import create_chat_model
+from email_assistant.human_review import request_human_review
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import interrupt, Command
+from langgraph.types import Command
 
 from email_assistant.tools import get_tools, get_tools_by_name
 from email_assistant.tools.default.prompt_templates import HITL_TOOLS_PROMPT
@@ -129,7 +130,7 @@ def triage_interrupt_handler(state: State) -> Command[Literal["response_agent", 
     }
 
     # Agent Inbox responds with a list
-    response = interrupt([request])[0]
+    response = request_human_review(request)
 
     # If user provides feedback, go to response agent and use feedback to respond to email
     if response["type"] == "response":
@@ -245,7 +246,7 @@ def interrupt_handler(state: State) -> Command[Literal["llm_call", "__end__"]]:
         }
 
         # Send to Agent Inbox and wait for response
-        response = interrupt([request])[0]
+        response = request_human_review(request)
 
         # Handle the responses
         if response["type"] == "accept":
