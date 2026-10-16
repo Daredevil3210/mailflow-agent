@@ -1,7 +1,7 @@
 [project]
 name = "mailflow-agent"
-version = "0.2.0"
-description = "A LangGraph email agent with DeepSeek, human review, and evaluation"
+version = "0.3.0"
+description = "A LangGraph email agent with DeepSeek, human review, preference memory, and evaluation"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "langchain>=1.0.0",
