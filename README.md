@@ -4,7 +4,7 @@
 
 项目使用 LangGraph 编排流程，DeepSeek 负责分类和生成，LangSmith 用于追踪与评估。目前完成了基础邮件助手、评估实验、人工审核和偏好记忆模块。我把审核中的修改与反馈整理到 Store，让后续模型调用读取；也通过 Agent Inbox 完成了 API 文档邮件的问答，并进入邮件草稿审核。
 
-邮件和日历工具目前都是模拟实现，适合学习与调试；真正接入邮箱服务是后续计划。
+主工作流中的邮件和日历工具仍为模拟实现。目前新增了独立的 Gmail OAuth 授权脚本与测试邮件读取检查：我已完成本地授权，接下来继续学习真实工具如何接入工作流。
 
 ## 我完成的内容
 
@@ -19,6 +19,8 @@
 - 偏好记忆：用 namespace 和 key 管理分类、回复、日程偏好，从编辑或自然语言反馈中更新完整偏好文本。
 - 跨线程复用：任务状态由 checkpointer 按 thread_id 保存；偏好由共享 Store 提供给不同线程。
 - Agent Inbox：连接本地记忆工作流，回答 Question、查看 write_email 草稿，并区分接受与反馈的处理路径。
+- Gmail 授权：学习并运行桌面应用 OAuth 流程，理解应用凭据、权限范围和访问/刷新令牌。
+- Gmail 读取准备：加入专用测试邮件检查脚本，加载本地授权、刷新访问令牌，并查询少量邮件头。
 
 ## 工作流程
 
@@ -54,12 +56,16 @@ flowchart TD
 - `src/email_assistant/email_assistant_hitl_memory.py`：带偏好记忆的人工审核工作流。
 - `src/email_assistant/human_review.py`：审核输入校验和恢复处理。
 - `src/email_assistant/models.py`：DeepSeek 模型配置和环境变量加载。
+- `src/email_assistant/tools/gmail/setup_gmail.py`：桌面应用 OAuth 授权及本地令牌保存。
+- `src/email_assistant/tools/gmail/check_gmail_read.py`：按专用主题查询测试邮件，仅显示邮件头。
+- `src/email_assistant/tools/gmail/README.md`：当前授权和读取阶段的学习说明。
 - `tests/test_human_review.py`：无需模型 API 的审核恢复测试。
 - `tests/test_memory.py`：使用模拟模型检查记忆读写、审核分支和跨线程复用。
+- `tests/test_gmail_setup.py`：使用临时假凭据和模拟 API 验证授权及读取分支。
 - `tests/test_response.py`：工具调用与回复质量测试。
 - `run_demo.py`：普通 Python 脚本入口。
 
-仓库按当前学习进度维护。Gmail 和托管部署目前仅学习了概念，真实 Gmail 集成、定时任务和独立 LangGraph 101 教程暂未纳入。
+仓库按当前学习进度维护。Gmail 当前纳入授权和独立读取检查；真实邮件发送、日历工具、Gmail 版工作流、邮件采集任务、定时任务和独立 LangGraph 101 教程暂未纳入。
 
 ## 本地运行
 
@@ -179,15 +185,37 @@ graph = overall_workflow.compile(checkpointer=checkpointer, store=store)
 
 测试中需要同时检查记忆与实际参数：我观察到记忆已经是“下午两点之后”，模型仍可能给出 `start_time=14`。提示词中的偏好不是硬性校验，实际执行前仍需审核。修改邮件文字也不会自动调整已执行的会议。当前实现保留课程的字符串记忆结构与简单副作用处理；多工具审核恢复时的重复执行、偏好冲突、用户隔离和数据库持久化还需要继续完善。
 
+## Gmail 授权与读取准备
+
+我已完成 Google Cloud 项目、Gmail/Calendar API 和桌面 OAuth 客户端的配置，并运行了 `setup_gmail.py`。这次学习重点是：`secrets.json` 标识申请授权的应用，浏览器完成用户授权后生成 `token.json`，后续 API 客户端用它访问 Gmail。
+
+配置方法见 [Gmail 授权与读取说明](src/email_assistant/tools/gmail/README.md)。在自己的电脑上放好凭据后运行：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/setup_gmail.py
+```
+
+该课程授权脚本申请 `gmail.modify` 和 `calendar` 权限，供后续邮件和日历操作使用；授权准备本身不执行邮件发送或创建日程。凭据位于 `src/email_assistant/tools/gmail/.secrets/`，目录及其中 JSON 文件均不提交。
+
+下一步给授权邮箱发一封主题为 `MailFlow-Read-Test` 的测试邮件，再运行：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/check_gmail_read.py
+```
+
+读取脚本加载本地令牌，必要时刷新并保存，查询最近七天该主题的邮件，最多显示三封的发件人、收件人、主题和日期。它不调用大模型，也不发送邮件、不创建会议、不修改邮件标签。实际打印结果留在本地，不作为仓库内容。
+
+本次发布仅验证脚本的离线流程和入口，不读取我的真实邮箱，也不把 Gmail 完整工作流记为已完成。
+
 ## 测试与实验记录
 
 无需外部模型的审核与记忆测试：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_human_review.py tests/test_memory.py -q
+.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_human_review.py tests/test_memory.py tests/test_gmail_setup.py -q
 ```
 
-覆盖结构化回复、非法输入恢复，以及记忆初始化、namespace 隔离、旧偏好与反馈输入、更新后读取、审核执行顺序、跨线程复用和 Done 路由。当前版本 24 项通过，其中审核恢复 10 项、记忆模块 14 项。记忆测试使用模拟模型和工具验证代码流程，不代表已经验证真实模型的偏好提取质量。
+覆盖结构化回复、非法输入恢复，以及记忆初始化、namespace 隔离、旧偏好与反馈输入、更新后读取、审核执行顺序、跨线程复用和 Done 路由。当前版本 30 项通过，其中审核恢复 10 项、记忆模块 14 项、Gmail 授权与读取 6 项。Gmail 测试使用临时假凭据和模拟 API，覆盖授权路径、缺失令牌、空查询结果、邮件头读取、令牌刷新和 API 失败。记忆测试使用模拟模型和工具验证代码流程，不代表已经验证真实模型的偏好提取质量。
 
 检查在线评估用例能否加载：
 
@@ -211,7 +239,7 @@ $env:LANGSMITH_TEST_SUITE = "MailFlow Agent: Response Evaluation"
 
 ## 后续计划
 
-- 接入真实邮箱与日历，补充参数校验。
+- 继续学习 `gmail_tools.py`，完成真实邮件/日历工具和工作流对接，并补充参数校验。
 - 处理多工具请求及恢复重放中的副作用问题。
 - 为偏好加入适用范围、冲突处理、用户隔离和持久化存储。
 - 补充真实模型对偏好提取及遵循情况的评估，完善 Agent Inbox 的完整审核测试。
