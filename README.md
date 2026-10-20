@@ -1,26 +1,23 @@
 # MailFlow Agent｜邮件智能体学习项目
 
-我用这个项目学习如何把大模型接入实际工作流：让助手判断邮件是否需要回复、选择工具完成任务，并在重要操作前暂停，交给我审核。
+我用这个项目学习把大模型接入实际邮件工作流：让助手判断邮件是否需要处理、生成工具调用，并在发送邮件或创建会议前暂停，由我审核。
 
-项目使用 LangGraph 编排流程，DeepSeek 负责分类和生成，LangSmith 用于追踪与评估。目前完成了基础邮件助手、评估实验、人工审核和偏好记忆模块。我把审核中的修改与反馈整理到 Store，让后续模型调用读取；也通过 Agent Inbox 完成了 API 文档邮件的问答，并进入邮件草稿审核。
+目前已完成主要模块的学习：基础 Agent、评估、人工审核、偏好记忆和 Gmail 集成。项目使用 LangGraph 编排、DeepSeek 分类与生成、LangSmith 追踪与评估。我已经实际跑通一封专用测试邮件的完整流程：**读取 Gmail → 分类 → 生成回复 → 人工批准 → 真实发送 → 原邮件标为已读**。
 
-主工作流中的邮件和日历工具仍为模拟实现。目前新增了独立的 Gmail OAuth 授权脚本与测试邮件读取检查：我已完成本地授权，接下来继续学习真实工具如何接入工作流。
+仓库同时保留模拟版与 Gmail 版：Notebook 适合拆解原理，Gmail 工作流用于真实 API 实验。日历、自动采集和定时任务的代码已整理，但不能因此视为所有真实场景或生产部署已经验证。
 
 ## 我完成的内容
 
-- 邮件分类：区分 `respond`、`notify`、`ignore`，为不同结果安排后续节点。
-- 工具调用：查询模拟日历、安排模拟会议、起草和模拟发送邮件。
-- 人工审核：支持批准、修改参数、提出意见和忽略操作。
-- 主动问答：助手通过 `Question` 获取缺失信息，再继续生成回复。
-- DeepSeek 接入：集中管理模型配置，适配结构化输出、工具调用和非 thinking 模式。
-- 评估实验：检查工具调用、分类结果，并使用模型裁判检查回复是否满足要求。
-- Studio 调试：查看中断请求、提交 JSON 反馈、批准邮件、检查消息历史。
-- 错误恢复：对人工审核输入做校验，格式错误时重新暂停，避免旧错误值让流程一直失败。
-- 偏好记忆：用 namespace 和 key 管理分类、回复、日程偏好，从编辑或自然语言反馈中更新完整偏好文本。
-- 跨线程复用：任务状态由 checkpointer 按 thread_id 保存；偏好由共享 Store 提供给不同线程。
-- Agent Inbox：连接本地记忆工作流，回答 Question、查看 write_email 草稿，并区分接受与反馈的处理路径。
-- Gmail 授权：学习并运行桌面应用 OAuth 流程，理解应用凭据、权限范围和访问/刷新令牌。
-- Gmail 读取准备：加入专用测试邮件检查脚本，加载本地授权、刷新访问令牌，并查询少量邮件头。
+- 邮件分流：respond、notify、ignore 对应不同处理路径。
+- DeepSeek 适配：集中管理模型配置、结构化输出、工具调用与非 thinking 模式。
+- 评估：工具调用检查、邮件分类和回复质量评估。
+- 人工审核：接受、编辑、反馈、忽略；缺失信息通过 Question 向用户询问。
+- 审核恢复：统一校验恢复值，非法输入时重新暂停；Gmail 版也复用此处理。
+- 偏好记忆：从编辑或文字反馈更新分类、回复、日历偏好，在不同线程读取同一 Store。
+- Gmail OAuth：理解应用凭据、用户授权、权限范围、访问与刷新令牌。
+- 真实邮件闭环：通过 Studio 批准后发送回复，核实已发送记录与已读标签。
+- 工具与采集：整理 Gmail/Calendar 工具、Gmail 输入字段、采集脚本及服务端线程/运行的关系。
+- 手工测试：按主题精确提交单封测试邮件，检查状态、当前偏好和真实发送结果；准备 11 组通用用例。
 
 ## 工作流程
 
@@ -30,46 +27,39 @@ flowchart TD
     B -->|ignore| Z[结束]
     B -->|notify| C[人工决定是否回复]
     C -->|忽略| Z
-    C -->|回复| D[模型生成方案]
+    C -->|回复| D[读取偏好并生成方案]
     B -->|respond| D
     D --> E[工具请求与参数]
-    E -->|查日历| F[执行模拟查询]
+    E -->|查日历| F[执行查询]
     F --> D
-    E -->|写邮件、安排会议、提问| G[暂停审核]
+    E -->|发邮件、安排会议、提问| G[暂停审核]
     G -->|反馈或回答| D
-    G -->|批准或修改| H[执行当前模拟工具]
+    G -->|批准或编辑| H[执行工具并记录结果]
     H --> D
     G -->|忽略| Z
-    D -->|Done| Z
+    D -->|Done| I[Gmail版标为已读]
+    I --> Z
 ```
 
-模型先生成工具调用参数，包括邮件正文，程序再暂停供人工审核。`Question` 的回答由审核处理函数作为工具消息交回模型。
+模型生成工具参数不是执行工具。accept 执行原方案；edit 执行完整的修改后参数，再更新相应偏好；response 先反馈并更新偏好，再生成新方案等待审核。Question 的回答进入当前线程，这个分支不直接更新长期偏好。分类 ignore 直接结束，当前不会自动标为已读。
 
-## 目录
+## 代码与学习材料
 
-- `notebooks/agent.ipynb`：基础 Agent 的学习与实验。
-- `notebooks/evaluation.ipynb`：工具检查、分类评估和回复质量评估。
-- `notebooks/hitl.ipynb`：人工审核、工具编辑、反馈和问答练习，以及实践记录。
-- `notebooks/memory.ipynb`：Store 基础操作、偏好初始化与更新、接受/编辑/反馈对比，以及我的实践记录。
-- `src/email_assistant/email_assistant.py`：基础邮件助手。
-- `src/email_assistant/email_assistant_hitl.py`：带人工审核的邮件助手。
-- `src/email_assistant/email_assistant_hitl_memory.py`：带偏好记忆的人工审核工作流。
-- `src/email_assistant/human_review.py`：审核输入校验和恢复处理。
-- `src/email_assistant/models.py`：DeepSeek 模型配置和环境变量加载。
-- `src/email_assistant/tools/gmail/setup_gmail.py`：桌面应用 OAuth 授权及本地令牌保存。
-- `src/email_assistant/tools/gmail/check_gmail_read.py`：按专用主题查询测试邮件，仅显示邮件头。
-- `src/email_assistant/tools/gmail/README.md`：当前授权和读取阶段的学习说明。
-- `tests/test_human_review.py`：无需模型 API 的审核恢复测试。
-- `tests/test_memory.py`：使用模拟模型检查记忆读写、审核分支和跨线程复用。
-- `tests/test_gmail_setup.py`：使用临时假凭据和模拟 API 验证授权及读取分支。
-- `tests/test_response.py`：工具调用与回复质量测试。
-- `run_demo.py`：普通 Python 脚本入口。
+- `notebooks/agent.ipynb`、`evaluation.ipynb`、`hitl.ipynb`、`memory.ipynb`：基础、评估、人工审核和记忆实验；不包含运行输出。
+- `src/email_assistant/email_assistant.py`：基础助手。
+- `src/email_assistant/email_assistant_hitl.py`：人工审核版。
+- `src/email_assistant/email_assistant_hitl_memory.py`：偏好记忆版。
+- `src/email_assistant/email_assistant_hitl_memory_gmail.py`：真实 Gmail 工作流。
+- `src/email_assistant/models.py`、`human_review.py`：模型配置与审核校验。
+- `src/email_assistant/tools/gmail/`：授权、读取检查、真实工具、采集及手工测试入口。
+- `src/email_assistant/cron.py` 与 Gmail 目录的 `setup_cron.py`：未启用的定时获取参考入口。
+- [Gmail 配置与运行](src/email_assistant/tools/gmail/README.md)。
+- [11 组手工测试步骤与邮件模板](docs/GMAIL_MANUAL_TEST_GUIDE.md)。
+- [从学习项目到个人日常助手的计划](docs/IMPLEMENTATION_ROADMAP.md)。
 
-仓库按当前学习进度维护。Gmail 当前纳入授权和独立读取检查；真实邮件发送、日历工具、Gmail 版工作流、邮件采集任务、定时任务和独立 LangGraph 101 教程暂未纳入。
+## 安装和模型配置
 
-## 本地运行
-
-推荐 Python 3.11，项目支持 `>=3.11,<3.14`。克隆后在项目根目录的 PowerShell 中执行：
+推荐 Python 3.11，支持 `>=3.11,<3.14`。克隆后，在项目根目录的 PowerShell 中执行：
 
 ```powershell
 py -m pip install uv
@@ -77,175 +67,116 @@ py -m uv python install 3.11
 py -m uv sync --python 3.11 --extra dev --locked
 ```
 
-在 PyCharm 中选择 `.venv\Scripts\python.exe` 作为解释器，Notebook 也使用同一个环境。
-
-首次配置时复制模板；已有 `.env` 时不要覆盖：
+PyCharm 和 Notebook 都选择本项目的 `.venv\Scripts\python.exe`。首次配置时复制空模板，已有 `.env` 不要覆盖：
 
 ```powershell
 Copy-Item .env.deepseek.example .env
 ```
 
-在自己的 `.env` 中填写配置：
-
-```dotenv
-DEEPSEEK_API_KEY=your_private_deepseek_key
-DEEPSEEK_MODEL=deepseek-flash
-LANGSMITH_TRACING=false
-LANGSMITH_PROJECT=mailflow-agent
-LANGSMITH_API_KEY=
-```
-
-模型名称可按账户支持情况调整，所选模型需要兼容工具调用和项目使用的参数。追踪与评估需要单独配置 LangSmith 密钥；使用其他服务区域时设置相应 `LANGSMITH_ENDPOINT`，必要时配置 `LANGSMITH_WORKSPACE_ID`。
+在本地填写 DeepSeek 密钥。模型默认值可按账户支持情况调整，需要支持项目使用的工具调用和非 thinking 参数。LangSmith 追踪默认关闭；需要追踪/评估时，在本地配置密钥、项目名以及必要的服务区域端点。
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 run_demo.py
 ```
 
-## 人工审核与 Studio
+以上是模拟工具的基础演示，不会发送真实邮件。
 
-在项目根目录启动本地服务，并保持终端开启：
+## Gmail：从授权到人工发送
 
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m langgraph_cli dev --no-browser
-```
-
-打开启动信息中的 Studio 链接，选择 `email_assistant_hitl` 或带记忆的 `email_assistant_hitl_memory`。在 `email_input` 字段提交邮件对象，运行到中断后，在 Resume 的原始输入框提交 JSON。
-
-回答问题或提出修改意见：
-
-```json
-[{"type": "response", "args": "Please make the email shorter and less formal."}]
-```
-
-批准当前方案：
-
-```json
-[{"type": "accept"}]
-```
-
-直接编辑邮件参数：
-
-```json
-[{
-  "type": "edit",
-  "args": {
-    "args": {
-      "to": "partner@example.com",
-      "subject": "Re: Dinner?",
-      "content": "Let's do Indian tonight!"
-    }
-  }
-}]
-```
-
-每次先核对当前 `action`。会议参数不能提交给邮件工具，修改邮件正文也不会自动更改已经执行的会议安排。工具是否允许某种操作由中断请求中的 `config` 决定。
-
-我排查过 `string indices must be integers, not 'str'`：处理函数原先直接按字典读取人工回复，错误字符串被检查点保存后，重试仍会拿到旧值。现在统一校验输入，并在错误格式下重新暂停；有效反馈能够从后续中断继续处理。
-
-Notebook 使用 `InMemorySaver`，恢复时需要同一个图实例和线程编号；重启内核会丢失内存状态。本地开发服务把线程数据保存在 `.langgraph_api`，该目录不提交。查看消息历史时先重新获取状态：
-
-```python
-state = graph.get_state(thread_config)
-for message in state.values["messages"]:
-    message.pretty_print()
-```
-
-Agent Inbox 提供待办式审核界面。我使用图 `email_assistant_hitl_memory` 和服务地址 `http://127.0.0.1:2024` 连接本地服务，回答 API 文档邮件中缺失接口的问题，并进入邮件草稿审核。Response 输入框填写自然语言，Studio 的原始 Resume 输入框使用 JSON。接口沿用 `action_request`、`config`、`description` 协议。
-
-Studio 用于检查执行节点、状态和错误；Agent Inbox 用于集中审核。一次审核中 Accept 与 Response 是两个选项：前者执行当前方案，后者让助手修改并等待下一次审核。若 Studio 显示 Failed to fetch，先打开 `http://127.0.0.1:2024/ok` 检查本地服务，并保持启动终端运行。
-
-## 偏好记忆的实现与观察
-
-我目前使用三份偏好：`triage_preferences` 决定哪些邮件需要处理，`response_preferences` 指导邮件风格，`cal_preferences` 指导会议安排。namespace 为 `("email_assistant", 偏好类别)`，每份文本使用固定 key `user_preferences`。
-
-`get_memory()` 读取已有偏好；记录不存在时才初始化默认内容。`update_memory()` 将旧偏好、用户反馈或修改前后的参数交给模型，生成完整的新文本，再覆盖同一个 key。保存偏好不是训练模型参数。
-
-不同审核操作的顺序不同：
-
-- Accept：执行原方案，不根据接受动作更新长期偏好。
-- Edit：执行编辑后的参数，再根据修改前后的差异更新对应偏好。
-- Response：先记录反馈并更新偏好，模型读取后提出新方案，再次等待审核；当前方案不会在反馈时执行。
-- Ignore：结束当前任务，课程实现会把该决定用于更新分类偏好；一次拒绝是否应该影响同类邮件，需要结合实际场景判断。
-- 回答 Question：信息进入当前线程的消息，这个分支没有直接更新长期偏好。
-
-在 Notebook 中，可以这样连接两类存储：
-
-```python
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.store.memory import InMemoryStore
-
-checkpointer = InMemorySaver()
-store = InMemoryStore()
-graph = overall_workflow.compile(checkpointer=checkpointer, store=store)
-```
-
-换任务时创建新的 `thread_id`；若要沿用已学到的偏好，继续使用同一份 Store。Notebook 三组练习各自创建空 Store，是为了独立比较审核方式。内核重启后内存中的状态与偏好都会丢失；本地开发服务管理自己的存储，不会自动读取 Notebook 的 Store。
-
-我可以在 Studio 的 Memory 中查看本地服务当前保存的偏好，也可以检查 Trace 中模型的 system 输入，确认当次使用了哪些规则。当前内容不等于每次历史调用的 Store 快照。
-
-测试中需要同时检查记忆与实际参数：我观察到记忆已经是“下午两点之后”，模型仍可能给出 `start_time=14`。提示词中的偏好不是硬性校验，实际执行前仍需审核。修改邮件文字也不会自动调整已执行的会议。当前实现保留课程的字符串记忆结构与简单副作用处理；多工具审核恢复时的重复执行、偏好冲突、用户隔离和数据库持久化还需要继续完善。
-
-## Gmail 授权与读取准备
-
-我已完成 Google Cloud 项目、Gmail/Calendar API 和桌面 OAuth 客户端的配置，并运行了 `setup_gmail.py`。这次学习重点是：`secrets.json` 标识申请授权的应用，浏览器完成用户授权后生成 `token.json`，后续 API 客户端用它访问 Gmail。
-
-配置方法见 [Gmail 授权与读取说明](src/email_assistant/tools/gmail/README.md)。在自己的电脑上放好凭据后运行：
+先按 [Gmail 配置说明](src/email_assistant/tools/gmail/README.md) 启用 API、创建桌面 OAuth 客户端，在本地放置 `.secrets/secrets.json`，运行授权并检查测试邮件读取：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/setup_gmail.py
-```
-
-该课程授权脚本申请 `gmail.modify` 和 `calendar` 权限，供后续邮件和日历操作使用；授权准备本身不执行邮件发送或创建日程。凭据位于 `src/email_assistant/tools/gmail/.secrets/`，目录及其中 JSON 文件均不提交。
-
-下一步给授权邮箱发一封主题为 `MailFlow-Read-Test` 的测试邮件，再运行：
-
-```powershell
 .\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/check_gmail_read.py
 ```
 
-读取脚本加载本地令牌，必要时刷新并保存，查询最近七天该主题的邮件，最多显示三封的发件人、收件人、主题和日期。它不调用大模型，也不发送邮件、不创建会议、不修改邮件标签。实际打印结果留在本地，不作为仓库内容。
+Google 授权与 DeepSeek 密钥是两套配置。授权文件、令牌和 `.env` 均不提交。读取检查默认找主题 `MailFlow-Read-Test` 的邮件，不调用模型、不发送、不修改标签。
 
-本次发布仅验证脚本的离线流程和入口，不读取我的真实邮箱，也不把 Gmail 完整工作流记为已完成。
-
-## 测试与实验记录
-
-无需外部模型的审核与记忆测试：
+启动只加载 Gmail 工作流的本地服务，并保持终端开启：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_human_review.py tests/test_memory.py tests/test_gmail_setup.py -q
+$env:PYTHONUTF8 = '1'
+.\.venv\Scripts\python.exe -X utf8 -m langgraph_cli dev --config langgraph.gmail.local.json --no-browser --no-reload --allow-blocking
 ```
 
-覆盖结构化回复、非法输入恢复，以及记忆初始化、namespace 隔离、旧偏好与反馈输入、更新后读取、审核执行顺序、跨线程复用和 Done 路由。当前版本 30 项通过，其中审核恢复 10 项、记忆模块 14 项、Gmail 授权与读取 6 项。Gmail 测试使用临时假凭据和模拟 API，覆盖授权路径、缺失令牌、空查询结果、邮件头读取、令牌刷新和 API 失败。记忆测试使用模拟模型和工具验证代码流程，不代表已经验证真实模型的偏好提取质量。
+先访问 `http://127.0.0.1:2024/ok`，再打开启动信息中的 Studio 链接。全模块开发配置是 `langgraph.json`；注册 cron 图并不等于创建了定时任务。
 
-检查在线评估用例能否加载：
+从另一个自己的邮箱给已授权 Gmail 发测试邮件，主题以 `MailFlow-Test-` 开头。替换下方两个示例地址，在另一个终端提交指定邮件：
+
+```powershell
+$senderEmail = 'sender@example.com'
+$assistantEmail = 'assistant@example.com'
+.\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/manual_test.py submit --subject MailFlow-Test-01-Edit --sender $senderEmail --recipient $assistantEmail
+```
+
+在脚本输出的线程链接中查看生成结果。原始 Resume 输入框完整填写 JSON，然后点击 Resume：
+
+```json
+[{"type":"accept"}]
+```
+
+这会真正执行当前动作。给修改意见则填写 response，并在新方案出现后再次审核：
+
+```json
+[{"type":"response","args":"Please make this reply shorter and less formal."}]
+```
+
+Studio 的 JSON 输入与 Agent Inbox 的文字反馈框不同；Question 通常只允许 response/ignore。Agent Inbox 可使用本地服务地址与图名 `email_assistant_hitl_memory_gmail` 连接。发信、建会前核对当前 action 和参数；修改邮件文案不会自动修改已创建会议。
+
+检查任务、实际发送和记忆：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/manual_test.py status --subject MailFlow-Test-01-Edit
+.\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/manual_test.py verify --subject MailFlow-Test-01-Edit
+.\.venv\Scripts\python.exe -X utf8 src/email_assistant/tools/gmail/manual_test.py memory --save after-first-test
+```
+
+辅助脚本精确匹配单封邮件；同一主题重复提交只返回已有线程。运行记录与记忆快照保存在被忽略的 `.local-backups/`。它不会自动接受审核。详细邮件模板、edit 参数和预期结果见手工指南。
+
+## 记忆与线程
+
+checkpointer 按 LangGraph thread_id 保存执行状态；Store 用 namespace 和 key 保存供不同线程读取的偏好。当前三类 profile 是 triage_preferences、response_preferences、cal_preferences，key 为 user_preferences。
+
+`get_memory()` 不存在时初始化；`update_memory()` 将旧 profile 与反馈交给模型，生成完整新文本后覆盖同一条记录。这不是训练模型参数。接受动作本身不更新偏好；忽略动作会更新分类偏好，其推断是否过度需要检查。
+
+Notebook 使用 InMemorySaver/InMemoryStore，重启内核会丢失内存数据；开发服务管理自己的 `.langgraph_api`，不会自动使用 Notebook 的对象。Gmail thread 表示邮件往来，LangGraph thread 表示工作流状态，二者不能混为一谈。
+
+Studio Memory 展示当前 profile，不能代替历史快照。判断当次读取了哪些规则，可检查模型调用的 system 输入。我观察过 profile 已写“下午两点之后”，模型仍提议14点，因此偏好还需执行前校验，不能只看保存成功。
+
+## 验证记录
+
+离线验证，不连接模型或 Google API：
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_human_review.py tests/test_memory.py tests/test_gmail_setup.py tests/test_gmail_workflow.py tests/test_gmail_manual.py -q
+```
+
+当前发布 48 项通过：审核恢复10、记忆14、Gmail授权读取6、Gmail工作流工具13、手工入口5。覆盖真实 checkpoint 下的先审核后执行、edit/response/ignore 差异、Done 路由、发信编码与已读操作，以及精确筛选和重复提交保护。使用模拟外部客户端，不代表真实模型遵循或所有 Google 行为已经验证。
+
+在线评估收集检查：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m pytest notebooks/test_tools.py tests/test_response.py --agent-module email_assistant --collect-only -q
 ```
 
-基础工具检查为 2 项，完整回复测试使用 8 封邮件，分别检查工具调用和回复质量，共 16 项：
+18项可收集；真正执行会调用模型并可能上传追踪。此前单次学习实验中分类为13/16正确、完整回复测试14/16通过，指标口径不同，不是稳定性能保证。本次发布未重跑在线评估。
 
-```powershell
-$env:LANGSMITH_TEST_SUITE = "MailFlow Agent: Tool Checks"
-.\.venv\Scripts\python.exe -X utf8 -m pytest notebooks/test_tools.py -v
+本地已核实真实邮件闭环：发送记录存在，原测试邮件已读，工作流结束。公开仓库不包含该邮件正文、账号、消息ID、线程/运行编号或Trace。11组手工用例是待执行说明；日历真实建会、邀请和跨邮件规则遵循等不能据此记为已通过。
 
-$env:LANGSMITH_TEST_SUITE = "MailFlow Agent: Response Evaluation"
-.\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_response.py --agent-module email_assistant -v
-```
+## 当前限制与下一步
 
-这些评估会调用模型，并记录到配置的 LangSmith 账户。此前单次学习运行中，分类评估为 13/16 正确，完整回复测试为 14/16 通过；两个指标测量的内容不同，不能视为稳定性能保证。本次发布未重新运行整套在线评估。
+- Calendar 时区混用可能导致查询失败并回退模拟数据；sendUpdates 的位置也需要调整，建会与通知分别核验。
+- 部分工具仍有模拟回退；发送工具在找不到原邮件时使用占位收件人的逻辑不适合真实使用。
+- 原 run_ingest.py 查询较宽、去重检查仍为TODO，并尝试删除旧运行。手工测试使用独立精确入口；尚未用于自动接管收件箱。
+- 处理多工具恢复重放、超时后的实际结果核验及重复发送/建会防护。
+- 默认背景仍保留上游示例人物和部分旧工具名称；实际使用需统一用户背景、签名、时区和工作时间。
+- 为偏好加入账号隔离、适用范围、冲突处理和执行前校验，验证服务重启后的恢复。
+- 定时任务、常驻服务和托管部署没有在本次发布时启用。
 
-人工审核练习中已跑通会议与邮件参数编辑、晚餐偏好问答，以及 Studio 中对 API 文档邮件的反馈和批准流程。模型是否严格满足时间、语气等要求，仍需要结合具体输出检查。
+## 数据与来源
 
-## 后续计划
+真实邮件会交给配置的模型服务，开启追踪时也可能进入 LangSmith。`.env`、OAuth 文件、令牌、本地数据库、运行日志、记忆快照、截图和备份均不属于发布内容。仓库仅提供空环境模板及使用 example.com 地址的手工测试模板；课程静态样例保留原始来源。
 
-- 继续学习 `gmail_tools.py`，完成真实邮件/日历工具和工作流对接，并补充参数校验。
-- 处理多工具请求及恢复重放中的副作用问题。
-- 为偏好加入适用范围、冲突处理、用户隔离和持久化存储。
-- 补充真实模型对偏好提取及遵循情况的评估，完善 Agent Inbox 的完整审核测试。
-
-## 来源与许可
-
-项目起步参考了 [LangChain agents-from-scratch](https://github.com/langchain-ai/agents-from-scratch) 和 [Ambient Agents with LangGraph](https://academy.langchain.com/courses/ambient-agents) 课程代码。我在此基础上进行 DeepSeek 适配、运行调试、审核恢复改进和学习记录整理。课程示例、公共辅助代码及插图保留其原始来源。
+项目起步参考 [LangChain agents-from-scratch](https://github.com/langchain-ai/agents-from-scratch) 与 [Ambient Agents with LangGraph](https://academy.langchain.com/courses/ambient-agents)。我在此基础上完成 DeepSeek 适配、运行调试、审核恢复改进、Gmail 集成实践和学习记录。
 
 采用 [MIT License](LICENSE)，保留上游 `Copyright (c) 2026 LangChain, Inc.` 声明。

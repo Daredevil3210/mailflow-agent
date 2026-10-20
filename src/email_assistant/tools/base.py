@@ -24,8 +24,25 @@ def get_tools(tool_names: Optional[List[str]] = None, include_gmail: bool = Fals
         "check_calendar_availability": check_calendar_availability,
     }
 
+    # Add Gmail tools if requested
     if include_gmail:
-        raise ValueError("Gmail tools are not included in this learning release.")
+        try:
+            from email_assistant.tools.gmail.gmail_tools import (
+                fetch_emails_tool,
+                send_email_tool,
+                check_calendar_tool,
+                schedule_meeting_tool
+            )
+
+            all_tools.update({
+                "fetch_emails_tool": fetch_emails_tool,
+                "send_email_tool": send_email_tool,
+                "check_calendar_tool": check_calendar_tool,
+                "schedule_meeting_tool": schedule_meeting_tool,
+            })
+        except ImportError:
+            # If Gmail tools aren't available, continue without them
+            pass
 
     if tool_names is None:
         return list(all_tools.values())
